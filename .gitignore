@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+venv/
+.env
+data/cognitive.db
+data/exports/*.csv
+data/sessions/
+*.joblib
+.vscode/
+.idea/
