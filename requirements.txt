@@ -12,5 +12,6 @@ scipy==1.15.1
 scikit-learn==1.6.1
 joblib==1.4.2
 
-# Utilities
-eventlet==0.37.0
+# Async / WebSocket
+gevent==24.11.1
+gevent-websocket==0.10.1

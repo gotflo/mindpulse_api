@@ -61,4 +61,7 @@ def load_config() -> AppConfig:
     config.server.host = os.getenv("HOST", config.server.host)
     config.server.port = int(os.getenv("PORT", config.server.port))
     config.server.debug = os.getenv("DEBUG", "false").lower() == "true"
+    config.server.socketio_async_mode = os.getenv(
+        "ASYNC_MODE", config.server.socketio_async_mode
+    )
     return config
