@@ -1,15 +1,15 @@
 """
-Real-time processing pipeline.
+Cloud processing pipeline.
 
-Orchestrates the full flow: PPI samples → windowing → cleaning →
-feature extraction → inference → storage → WebSocket emission.
+Receives raw PPI/HR data from the mobile app via Socket.IO,
+then orchestrates: windowing -> cleaning -> feature extraction ->
+inference -> storage -> WebSocket emission.
 """
 
 import logging
 import time
 from typing import Callable, Optional
 
-from app.acquisition.polar_client import PolarClient, PolarSample, ConnectionState
 from app.config.settings import AppConfig
 from app.features.hrv_features import HRVFeatureExtractor, HRVFeatures
 from app.ml.inference import CognitiveInference, InferenceResult
@@ -21,7 +21,11 @@ logger = logging.getLogger(__name__)
 
 
 class RealtimePipeline:
-    """Wires together acquisition → signal → features → ML → storage."""
+    """Wires together signal processing -> features -> ML -> storage.
+
+    Data is received from the mobile app (which handles BLE acquisition)
+    via receive_ppi_data() and receive_hr_data().
+    """
 
     def __init__(self, config: AppConfig, session_manager: SessionManager):
         self._config = config
@@ -37,26 +41,17 @@ class RealtimePipeline:
             config.ml, self._cleaner, self._feature_extractor
         )
 
-        # BLE client
-        self._polar = PolarClient(config.ble)
-
         # Callbacks
         self._on_inference: Optional[Callable[[InferenceResult], None]] = None
         self._on_hr_update: Optional[Callable[[int, float], None]] = None
-        self._on_state_change: Optional[Callable] = None
 
         # Current HR tracking
         self._current_hr: int = 0
         self._last_hr_time: float = 0.0
         self._early_inference_sent: bool = False
 
-        # Wire internal callbacks
-        self._polar.on_sample(self._handle_sample)
+        # Wire internal callback
         self._window.on_window(self._handle_window)
-
-    @property
-    def polar_client(self) -> PolarClient:
-        return self._polar
 
     @property
     def current_hr(self) -> int:
@@ -68,29 +63,57 @@ class RealtimePipeline:
     def on_hr_update(self, callback: Callable[[int, float], None]):
         self._on_hr_update = callback
 
-    def on_state_change(self, callback: Callable):
-        self._on_state_change = callback
-        self._polar.on_state_change(callback)
+    # ─── Data reception from mobile app ───
 
-    def on_unexpected_disconnect(self, callback: Callable):
-        """Register callback for when the sensor disconnects unexpectedly."""
-        self._polar.on_unexpected_disconnect(callback)
+    def receive_ppi_data(self, ppi_ms: list[int], timestamp: float):
+        """Receive raw PPI samples from the mobile app via Socket.IO."""
+        if ppi_ms:
+            self._window.add_samples(ppi_ms, timestamp)
 
-    def _handle_sample(self, sample: PolarSample):
-        # Update HR
-        if sample.hr > 0:
-            self._current_hr = sample.hr
-            self._last_hr_time = sample.timestamp
+    def receive_hr_data(self, hr: int, timestamp: float):
+        """Receive HR value from the mobile app via Socket.IO."""
+        if hr > 0:
+            self._current_hr = hr
+            self._last_hr_time = timestamp
             if self._on_hr_update:
-                self._on_hr_update(sample.hr, sample.timestamp)
+                self._on_hr_update(hr, timestamp)
 
             # Emit early HR-only inference if no PPI window yet
             if self._window.sample_count == 0 and not self._early_inference_sent:
-                self._emit_early_hr_inference(sample.hr, sample.timestamp)
+                self._emit_early_hr_inference(hr, timestamp)
 
-        # Feed PPI to sliding window
-        if sample.ppi_ms:
-            self._window.add_samples(sample.ppi_ms, sample.timestamp)
+    # ─── Session management ───
+
+    def start_session(self, activity_type: str = "autre"):
+        """Start a new recording session (called when mobile starts monitoring)."""
+        self._window.reset()
+        self._inference.reset()
+        self._current_hr = 0
+        self._early_inference_sent = False
+        session = self._session_manager.start_session(activity_type)
+        logger.info("Session started — %s", session.id)
+        return session
+
+    def stop_session(self) -> Optional[dict]:
+        """Stop the current session (called when mobile stops monitoring)."""
+        summary = self._session_manager.stop_session()
+        self._window.reset()
+        self._inference.reset()
+        self._current_hr = 0
+        self._early_inference_sent = False
+        logger.info("Session stopped")
+        return summary
+
+    def force_stop_session(self) -> Optional[dict]:
+        """Stop the active session (for unexpected disconnects from mobile)."""
+        summary = self._session_manager.stop_session()
+        self._window.reset()
+        self._inference.reset()
+        self._current_hr = 0
+        self._early_inference_sent = False
+        return summary
+
+    # ─── Internal processing ───
 
     def _handle_window(self, window: WindowData):
         logger.info("Window received — %d samples, span=%.1fs",
@@ -165,82 +188,3 @@ class RealtimePipeline:
 
         if self._on_inference:
             self._on_inference(result)
-
-    async def start_monitoring(self, on_progress: Optional[Callable[[str], None]] = None):
-        """Full auto-start: scan → connect → stream → create session.
-
-        Args:
-            on_progress: Optional callback called with status strings
-                         ("scanning", "connecting", "streaming").
-
-        Returns:
-            SessionInfo for the newly created session.
-        """
-        # Reset pipeline state
-        self._window.reset()
-        self._inference.reset()
-        self._current_hr = 0
-        self._early_inference_sent = False
-
-        # Scan
-        if on_progress:
-            on_progress("scanning")
-        device = await self._polar.scan()
-        if device is None:
-            raise RuntimeError("Polar device not found")
-
-        # Connect
-        if on_progress:
-            on_progress("connecting")
-        connected = await self._polar.connect()
-        if not connected:
-            raise RuntimeError("Failed to connect to Polar device")
-
-        # Start streaming
-        await self._polar.start_streaming()
-
-        # Create session
-        session = self._session_manager.start_session("autre")
-
-        if on_progress:
-            on_progress("streaming")
-
-        logger.info("Monitoring started — session %s", session.id)
-        return session
-
-    async def stop_monitoring(self) -> Optional[dict]:
-        """Full auto-stop: stop streaming → stop session → disconnect.
-
-        Returns:
-            Session summary dict, or None if no active session.
-        """
-        # Stop session first to capture all data
-        summary = self._session_manager.stop_session()
-
-        # Stop streaming & disconnect
-        try:
-            await self._polar.stop_streaming()
-        except Exception as e:
-            logger.warning("Error stopping streaming: %s", e)
-        try:
-            await self._polar.disconnect()
-        except Exception as e:
-            logger.warning("Error disconnecting: %s", e)
-
-        # Reset pipeline
-        self._window.reset()
-        self._inference.reset()
-        self._current_hr = 0
-        self._early_inference_sent = False
-
-        logger.info("Monitoring stopped")
-        return summary
-
-    def force_stop_session(self) -> Optional[dict]:
-        """Stop the active session without touching BLE (for unexpected disconnects)."""
-        summary = self._session_manager.stop_session()
-        self._window.reset()
-        self._inference.reset()
-        self._current_hr = 0
-        self._early_inference_sent = False
-        return summary

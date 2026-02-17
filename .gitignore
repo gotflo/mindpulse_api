@@ -5,6 +5,7 @@ dist/
 build/
 .eggs/
 venv/
+.venv/
 .env
 data/cognitive.db
 data/exports/*.csv

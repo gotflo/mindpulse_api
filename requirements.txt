@@ -4,9 +4,7 @@ flask-socketio==5.4.1
 flask-cors==5.0.1
 python-socketio==5.12.1
 python-engineio==4.11.2
-
-# BLE
-bleak==0.22.3
+gunicorn==23.0.0
 
 # Signal processing & ML
 numpy==2.2.2

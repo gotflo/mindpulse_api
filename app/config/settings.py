@@ -3,17 +3,6 @@ from dataclasses import dataclass, field
 
 
 @dataclass
-class BLEConfig:
-    device_name: str = "Polar Sense"
-    scan_timeout: float = 10.0
-    hr_uuid: str = "00002a37-0000-1000-8000-00805f9b34fb"
-    battery_uuid: str = "00002a19-0000-1000-8000-00805f9b34fb"
-    # PMD UUIDs are hardcoded in polar_client.py (protocol-specific)
-    reconnect_attempts: int = 3
-    reconnect_delay: float = 2.0
-
-
-@dataclass
 class SignalConfig:
     window_size_sec: float = 15.0
     window_step_sec: float = 1.0
@@ -61,7 +50,6 @@ class ServerConfig:
 
 @dataclass
 class AppConfig:
-    ble: BLEConfig = field(default_factory=BLEConfig)
     signal: SignalConfig = field(default_factory=SignalConfig)
     ml: MLConfig = field(default_factory=MLConfig)
     storage: StorageConfig = field(default_factory=StorageConfig)

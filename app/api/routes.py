@@ -22,19 +22,6 @@ def register_routes(app, session_manager, analysis_service, pipeline):
     def health():
         return jsonify({"status": "ok"})
 
-    # ─── Device ───
-
-    @api_bp.route("/device/status", methods=["GET"])
-    def device_status():
-        info = pipeline.polar_client.info
-        return jsonify({
-            "name": info.name,
-            "address": info.address,
-            "battery_level": info.battery_level,
-            "signal_quality": round(info.signal_quality, 3),
-            "connection_state": info.connection_state.value,
-        })
-
     # ─── Sessions ───
 
     @api_bp.route("/sessions", methods=["GET"])
@@ -53,14 +40,9 @@ def register_routes(app, session_manager, analysis_service, pipeline):
 
     @api_bp.route("/monitoring/status", methods=["GET"])
     def monitoring_status():
-        info = pipeline.polar_client.info
         active = session_manager.active_session
         return jsonify({
             "is_monitoring": active is not None,
-            "connection_state": info.connection_state.value,
-            "device_name": info.name,
-            "battery_level": info.battery_level,
-            "signal_quality": round(info.signal_quality, 3),
             "session": active.to_dict() if active else None,
         })
 

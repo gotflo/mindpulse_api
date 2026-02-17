@@ -25,7 +25,6 @@ def setup_logging(debug: bool = False):
     # Silence noisy libraries
     logging.getLogger("engineio").setLevel(logging.WARNING)
     logging.getLogger("socketio").setLevel(logging.WARNING)
-    logging.getLogger("bleak").setLevel(logging.INFO)
 
 
 def main():
