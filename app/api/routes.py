@@ -29,7 +29,11 @@ def register_routes(app, session_manager, analysis_service, pipeline):
         limit = request.args.get("limit", 50, type=int)
         offset = request.args.get("offset", 0, type=int)
         sessions = session_manager._db.list_sessions(limit=limit, offset=offset)
-        return jsonify(sessions)
+        # Attach summary to each session for the Flutter client
+        for s in sessions:
+            summary = session_manager._db.get_summary(s["id"])
+            s["summary"] = summary
+        return jsonify({"sessions": sessions})
 
     @api_bp.route("/sessions/active", methods=["GET"])
     def active_session():
@@ -57,12 +61,12 @@ def register_routes(app, session_manager, analysis_service, pipeline):
     @api_bp.route("/sessions/<session_id>/data", methods=["GET"])
     def get_session_data(session_id):
         data = session_manager._db.get_session_data(session_id)
-        return jsonify(data)
+        return jsonify({"data_points": data})
 
     @api_bp.route("/sessions/<session_id>/critical-periods", methods=["GET"])
     def get_critical_periods(session_id):
         periods = analysis_service.detect_critical_periods(session_id)
-        return jsonify(periods)
+        return jsonify({"critical_periods": periods})
 
     @api_bp.route("/sessions/<session_id>/recommendations", methods=["GET"])
     def get_recommendations(session_id):
@@ -93,7 +97,7 @@ def register_routes(app, session_manager, analysis_service, pipeline):
     def history_days():
         n_days = request.args.get("n", 30, type=int)
         days = analysis_service.get_history_days(n_days)
-        return jsonify(days)
+        return jsonify({"days": days})
 
     @api_bp.route("/history/<date_str>", methods=["GET"])
     def daily_digest(date_str):
@@ -113,7 +117,7 @@ def register_routes(app, session_manager, analysis_service, pipeline):
     def weekly_analysis():
         end_date = request.args.get("end_date", None)
         stats = analysis_service.get_weekly_evolution(end_date)
-        return jsonify(stats)
+        return jsonify({"days": stats})
 
     # ─── Settings ───
 
