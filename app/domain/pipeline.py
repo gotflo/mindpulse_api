@@ -49,6 +49,7 @@ class RealtimePipeline:
         self._current_hr: int = 0
         self._last_hr_time: float = 0.0
         self._early_inference_sent: bool = False
+        self._last_early_time: float = 0.0
 
         # Wire internal callback
         self._window.on_window(self._handle_window)
@@ -78,9 +79,13 @@ class RealtimePipeline:
             if self._on_hr_update:
                 self._on_hr_update(hr, timestamp)
 
-            # Emit early HR-only inference if no PPI window yet
-            if self._window.sample_count == 0 and not self._early_inference_sent:
-                self._emit_early_hr_inference(hr, timestamp)
+            # Emit HR-only inference periodically when no PPI data is flowing.
+            # This ensures scores still update even if PPI stream fails.
+            if self._window.sample_count == 0:
+                now = timestamp
+                if not self._early_inference_sent or (now - self._last_early_time > 3.0):
+                    self._emit_early_hr_inference(hr, timestamp)
+                    self._last_early_time = now
 
     # ─── Session management ───
 
@@ -90,6 +95,7 @@ class RealtimePipeline:
         self._inference.reset()
         self._current_hr = 0
         self._early_inference_sent = False
+        self._last_early_time = 0.0
         session = self._session_manager.start_session(activity_type)
         logger.info("Session started — %s", session.id)
         return session
@@ -101,6 +107,7 @@ class RealtimePipeline:
         self._inference.reset()
         self._current_hr = 0
         self._early_inference_sent = False
+        self._last_early_time = 0.0
         logger.info("Session stopped")
         return summary
 
@@ -111,6 +118,7 @@ class RealtimePipeline:
         self._inference.reset()
         self._current_hr = 0
         self._early_inference_sent = False
+        self._last_early_time = 0.0
         return summary
 
     # ─── Internal processing ───
@@ -150,25 +158,34 @@ class RealtimePipeline:
             logger.error("Pipeline processing error: %s", e, exc_info=True)
 
     def _emit_early_hr_inference(self, hr: int, timestamp: float):
-        """Emit a preliminary inference based on HR only, before PPI arrives.
+        """Emit inference based on HR only (when PPI data is unavailable).
 
-        Gives immediate visual feedback (~2s after connect) while waiting for
-        the PPI buffer to fill up.
+        Produces periodically updated scores so the UI always reflects
+        the current HR, even if PPI streaming fails.
         """
         from app.ml.inference import InferenceResult, FatigueTrend
         from app.ml.model import CognitiveScores
 
         self._early_inference_sent = True
-
-        # Rough estimate from HR alone (normal resting: 60-80 bpm)
-        stress_estimate = max(0.0, min(100.0, (hr - 60) * 1.5))
-        load_estimate = max(0.0, min(100.0, (hr - 55) * 0.8))
         mean_rr = 60000.0 / hr if hr > 0 else 800.0
 
-        scores = CognitiveScores(
+        # Rough estimates from HR (60-80 bpm = resting range)
+        stress_estimate = max(0.0, min(100.0, (hr - 60) * 1.5))
+        load_estimate = max(0.0, min(100.0, (hr - 55) * 0.8))
+
+        # Basic fatigue: grows slowly with time since session start
+        session = self._session_manager.active_session
+        elapsed_min = 0.0
+        if session:
+            elapsed_min = (timestamp - session.start_time) / 60.0
+        fatigue_estimate = max(0.0, min(100.0, elapsed_min * 1.5 + (hr - 65) * 0.3))
+
+        # Apply smoothing against previous scores
+        raw = CognitiveScores(
             stress=stress_estimate, cognitive_load=load_estimate,
-            fatigue=0.0, timestamp=timestamp,
+            fatigue=fatigue_estimate, timestamp=timestamp,
         )
+        scores = self._inference._smooth(raw)
 
         features = HRVFeatures(
             mean_hr=float(hr), mean_rr=mean_rr,
@@ -178,13 +195,32 @@ class RealtimePipeline:
             quality_ratio=0, sample_count=0,
         )
 
+        # Track fatigue trend
+        self._inference._fatigue_history.append((timestamp, scores.fatigue))
+        fatigue_trend = self._inference._compute_fatigue_trend()
+
         result = InferenceResult(
             scores=scores, features=features,
-            fatigue_trend=FatigueTrend(slope=0, predicted_fatigue_10min=0, confidence=0),
+            fatigue_trend=fatigue_trend,
             timestamp=timestamp, window_quality=0,
         )
 
-        logger.info("Early HR-only inference — hr=%d, stress_est=%.1f", hr, stress_estimate)
+        # Store data point if session active
+        if self._session_manager.is_recording:
+            self._session_manager.record_data_point({
+                "timestamp": timestamp,
+                "hr": float(hr),
+                "rmssd": 0, "sdnn": 0, "pnn50": 0, "mean_rr": mean_rr,
+                "lf_power": 0, "hf_power": 0, "lf_hf_ratio": 0,
+                "stress": scores.stress,
+                "cognitive_load": scores.cognitive_load,
+                "fatigue": scores.fatigue,
+                "window_quality": 0, "fatigue_slope": fatigue_trend.slope,
+                "fatigue_predicted": fatigue_trend.predicted_fatigue_10min,
+            })
+
+        logger.info("HR-only inference — hr=%d stress=%.1f load=%.1f fatigue=%.1f",
+                     hr, scores.stress, scores.cognitive_load, scores.fatigue)
 
         if self._on_inference:
             self._on_inference(result)

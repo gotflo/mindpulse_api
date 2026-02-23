@@ -45,10 +45,16 @@ class SlidingWindow:
 
     def add_samples(self, ppi_ms: list[int], timestamp: float):
         """Add new PPI samples. Timestamps are reconstructed from PPI durations."""
+        # Reconstruct timestamps going backward from `timestamp`
+        # then add to buffer in chronological order (oldest first).
         t = timestamp
+        batch: list[_Sample] = []
         for ppi in reversed(ppi_ms):
-            self._buffer.append(_Sample(timestamp=t, ppi_ms=ppi))
+            batch.append(_Sample(timestamp=t, ppi_ms=ppi))
             t -= ppi / 1000.0
+        # batch is newest-first → reverse to get oldest-first
+        for s in reversed(batch):
+            self._buffer.append(s)
 
         self._evict_old()
 
